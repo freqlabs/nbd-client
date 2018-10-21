@@ -7,11 +7,9 @@ This client is designed to run on top of FreeBSD's GEOM Gate device driver,
 keeping the network client in a userland daemon rather than in a kernel
 module.
 
-Casper is used to sandbox the DNS lookup of the server host, and Capsicum
-is used to limit the capabilities of the client once connected.
-
-Messages are logged via syslog, and to stdout and stderr when running
-interactively.
+Casper is used to sandbox the DNS lookup of the server host as well as for
+logging messages to syslog.  Capsicum is used to limit the capabilities of the
+client once connected.
 
 The client immediately daemonizes unless passed the `-f` flag, in which
 case it remains running in the foreground.
@@ -21,7 +19,7 @@ case it remains running in the foreground.
 * TLS and other extensions are not currently supported.
 * Only the default (unnamed) export is used.
 * Manual control (listing, naming, numbering, removal) of the device nodes
-  is not yet provided by this tool.
+  is not yet provided by this tool.  Use ggatec instead.
 
 ## Usage Example
 
