@@ -82,17 +82,6 @@ bio_cmd_string(uint16_t cmd)
 	}
 }
 
-enum loop_state {
-	SETUP,
-	START,
-	DO_CMD,
-	RECV_HEADER,
-	RECV_DATA,
-	END_CMD,
-	FINISHED,
-	FAIL
-};
-
 struct loop_context {
 	ggate_context_t ggate;
 	nbd_client_t nbd;
@@ -101,7 +90,27 @@ struct loop_context {
 	size_t buflen;
 };
 
-static inline enum loop_state
+struct loop_state {
+	struct loop_state (*transition)(struct loop_context *);
+};
+
+static struct loop_state loop_setup(struct loop_context *);
+static struct loop_state loop_start(struct loop_context *);
+static struct loop_state loop_command(struct loop_context *);
+static struct loop_state loop_recv_header(struct loop_context *);
+static struct loop_state loop_recv_data(struct loop_context *);
+static struct loop_state loop_end_command(struct loop_context *);
+
+#define SETUP  (struct loop_state){ loop_setup }
+#define START (struct loop_state){ loop_start }
+#define DO_CMD (struct loop_state){ loop_command }
+#define RECV_HEADER (struct loop_state){ loop_recv_header }
+#define RECV_DATA (struct loop_state){ loop_recv_data }
+#define END_CMD (struct loop_state){ loop_end_command }
+#define FINISHED (struct loop_state){ (void *)SUCCESS }
+#define FAIL (struct loop_state){ (void *)FAILURE }
+
+static inline struct loop_state
 loop_init(struct loop_context *ctx,
 	  ggate_context_t ggate,
 	  nbd_client_t nbd,
@@ -120,7 +129,7 @@ loop_init(struct loop_context *ctx,
 	return SETUP;
 }
 
-static inline enum loop_state
+static inline struct loop_state
 loop_setup(struct loop_context *ctx)
 {
 
@@ -138,16 +147,15 @@ ggioctl(struct loop_context *ctx, uint64_t req)
 	return ggate_context_ioctl(ctx->ggate, req, &ctx->ggio);
 }
 
-static inline enum loop_state
+static inline struct loop_state
 loop_start(struct loop_context *ctx)
 {
 	int result;
 
 	result = ggioctl(ctx, G_GATE_CMD_START);
 
-	if (result == FAILURE) {
+	if (result == FAILURE)
 		return FAIL;
-	}
 
 	switch (ctx->ggio.gctl_error) {
 	case SUCCESS:
@@ -198,7 +206,7 @@ nbdcmd(struct loop_context *ctx)
 	}
 }
 
-static inline enum loop_state
+static inline struct loop_state
 loop_command(struct loop_context *ctx)
 {
 	int result;
@@ -224,7 +232,7 @@ loop_command(struct loop_context *ctx)
 	}
 }
 
-static inline enum loop_state
+static inline struct loop_state
 hdrinval(struct loop_context* ctx)
 {
 	char const *name;
@@ -255,7 +263,7 @@ hdrinval(struct loop_context* ctx)
 	return FAIL;
 }
 
-static inline enum loop_state
+static inline struct loop_state
 loop_recv_header(struct loop_context* ctx)
 {
 	int result;
@@ -281,7 +289,7 @@ loop_recv_header(struct loop_context* ctx)
 	}
 }
 
-static inline enum loop_state
+static inline struct loop_state
 loop_recv_data(struct loop_context *ctx)
 {
 	int result;
@@ -305,7 +313,7 @@ loop_recv_data(struct loop_context *ctx)
 	}
 }
 
-static inline enum loop_state
+static inline struct loop_state
 loop_end_command(struct loop_context *ctx)
 {
 	int result;
@@ -340,7 +348,7 @@ run_loop(ggate_context_t ggate, nbd_client_t nbd)
 	uint8_t buf[MAXPHYS];
 	struct loop_context context;
 	struct loop_context *ctx;
-	enum loop_state current_state;
+	struct loop_state state;
 
 	sa.sa_sigaction = signal_handler;
 	sa.sa_flags = SA_SIGINFO;
@@ -351,7 +359,7 @@ run_loop(ggate_context_t ggate, nbd_client_t nbd)
 	}
 
 	ctx = &context;
-	current_state = loop_init(ctx, ggate, nbd, &buf[0], sizeof buf);
+	state = loop_init(ctx, ggate, nbd, &buf[0], sizeof buf);
 
 	for (;;) {
 		if (disconnect) {
@@ -360,38 +368,17 @@ run_loop(ggate_context_t ggate, nbd_client_t nbd)
 			break;
 		}
 
-		switch (current_state) {
-		case SETUP:
-			current_state = loop_setup(ctx);
-			break;
-
-		case START:
-			current_state = loop_start(ctx);
-			break;
-
-		case DO_CMD:
-			current_state = loop_command(ctx);
-			break;
-
-		case RECV_HEADER:
-			current_state = loop_recv_header(ctx);
-			break;
-
-		case RECV_DATA:
-			current_state = loop_recv_data(ctx);
-			break;
-
-		case END_CMD:
-			current_state = loop_end_command(ctx);
-			break;
-
-		case FINISHED:
+		switch ((int)state.transition) {
+		case SUCCESS:
 			return SUCCESS;
 
-		case FAIL:
-		default:
+		case FAILURE:
 			ggate_context_cancel(ggate, context.ggio.gctl_seq);
 			return FAILURE;
+
+		default:
+			state = state.transition(ctx);
+			break;
 		}
 	}
 
@@ -462,7 +449,7 @@ main(int argc, char *argv[])
 	system_syslog$ = cap_service_open(system$, "system.syslog");
 	if (system_syslog$ == NULL) {
 		fprintf(stderr,
-		    "%s: failed to open system.dns service: %s\n",
+		    "%s: failed to open system.syslog service: %s\n",
 		    __func__, strerror(errno));
 		return EXIT_FAILURE;
 	}
