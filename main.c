@@ -448,7 +448,7 @@ main(int argc, char *argv[])
 	snprintf(ident, sizeof ident, "%s (%s:%s)", getprogname(), host, port);
 
 	/*
-	 * Open a channel to use Casper.
+	 * Open channels to use Casper and cap_syslog.
 	 */
 
 	system$ = cap_init();
@@ -456,15 +456,15 @@ main(int argc, char *argv[])
 		fprintf(stderr,
 		    "%s: failed to initialize Casper: %s\n",
 		    __func__, strerror(errno));
-		goto close;
+		return EXIT_FAILURE;
 	}
+
 	system_syslog$ = cap_service_open(system$, "system.syslog");
 	if (system_syslog$ == NULL) {
 		fprintf(stderr,
 		    "%s: failed to open system.dns service: %s\n",
 		    __func__, strerror(errno));
-		cap_close(system$);
-		goto close;
+		return EXIT_FAILURE;
 	}
 
 	/*
