@@ -4,14 +4,13 @@ DEBUG_FLAGS = -g
 CSTD = c11
 CFLAGS = -O0 -pipe
 LDADD += -lm -lpthread
+CFLAGS += -DWITH_CASPER
+LDADD += -lcasper -lnv
+LDADD += -lcap_dns
+LDADD += -lcap_syslog
 
 DESTDIR = /usr/local
 BINDIR = /sbin
 MAN =
 
 .include <bsd.prog.mk>
-
-.if defined(LIBCASPER) && defined(LIBCAP_DNS)
-CFLAGS += -DHAVE_LIBCASPER
-LDADD += -lcasper -lcap_dns -lnv
-.endif

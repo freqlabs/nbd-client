@@ -8,10 +8,11 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 
-#ifdef HAVE_LIBCASPER
+#include <capsicum_helpers.h>
+
 #include <libcasper.h>
 #include <casper/cap_dns.h>
-#endif
+#include <casper/cap_syslog.h>
 
 #include <geom/gate/g_gate.h>
 
@@ -46,6 +47,8 @@ usage()
 	fprintf(stderr, "usage: %s [-f] host [port]\n", getprogname());
 }
 
+cap_channel_t *system_syslog$;
+
 static volatile sig_atomic_t disconnect = 0;
 
 static void
@@ -71,9 +74,7 @@ bio_cmd_string(uint16_t cmd)
 		CASE_MESSAGE(BIO_CMD0);
 		CASE_MESSAGE(BIO_CMD1);
 		CASE_MESSAGE(BIO_CMD2);
-#ifdef BIO_ZONE
 		CASE_MESSAGE(BIO_ZONE);
-#endif
 
 #undef CASE_MESSAGE
 
@@ -157,8 +158,8 @@ loop_start(struct loop_context *ctx)
 
 	case ENXIO:
 	default:
-		syslog(LOG_ERR, "%s: ggate control operation failed: %s",
-		       __func__, strerror(ctx->ggio.gctl_error));
+		log(LOG_ERR, "%s: ggate control operation failed: %s",
+		    __func__, strerror(ctx->ggio.gctl_error));
 		return FAIL;
 	}
 }
@@ -191,8 +192,8 @@ nbdcmd(struct loop_context *ctx)
 		return nbd_client_send_flush(ctx->nbd, ctx->ggio.gctl_seq);
 
 	default:
-		syslog(LOG_NOTICE, "%s: unsupported operation: %d",
-		       __func__, ctx->ggio.gctl_cmd);
+		log(LOG_NOTICE, "%s: unsupported operation: %d",
+		    __func__, ctx->ggio.gctl_cmd);
 		return EOPNOTSUPP;
 	}
 }
@@ -213,12 +214,12 @@ loop_command(struct loop_context *ctx)
 		return END_CMD;
 
 	case FAILURE:
-		syslog(LOG_ERR, "%s: nbd client error", __func__);
+		log(LOG_ERR, "%s: nbd client error", __func__);
 		return FAIL;
 
 	default:
-		syslog(LOG_ERR, "%s: unhandled nbd command result: %d",
-		       __func__, result);
+		log(LOG_ERR, "%s: unhandled nbd command result: %d",
+		    __func__, result);
 		return FAIL;
 	}
 }
@@ -236,20 +237,20 @@ hdrinval(struct loop_context* ctx)
 		return END_CMD;
 	}
 
-	syslog(LOG_ERR, "%s: server rejected command request", __func__);
+	log(LOG_ERR, "%s: server rejected command request", __func__);
 
 	name = bio_cmd_string(ctx->ggio.gctl_cmd);
 
 	if (name == NULL)
-		syslog(LOG_DEBUG, "\tcommand: %u (unknown)",
-		       ctx->ggio.gctl_cmd);
+		log(LOG_DEBUG, "\tcommand: %u (unknown)",
+		    ctx->ggio.gctl_cmd);
 	else
-		syslog(LOG_DEBUG, "\tcommand: %s", name);
+		log(LOG_DEBUG, "\tcommand: %s", name);
 
-	syslog(LOG_DEBUG, "\toffset: %lx (%ld)",
-	       ctx->ggio.gctl_offset, ctx->ggio.gctl_offset);
-	syslog(LOG_DEBUG, "\tlength: %lx (%lu)",
-	       ctx->ggio.gctl_length, ctx->ggio.gctl_length);
+	log(LOG_DEBUG, "\toffset: %lx (%ld)",
+	    ctx->ggio.gctl_offset, ctx->ggio.gctl_offset);
+	log(LOG_DEBUG, "\tlength: %lx (%lu)",
+	    ctx->ggio.gctl_length, ctx->ggio.gctl_length);
 
 	return FAIL;
 }
@@ -273,8 +274,8 @@ loop_recv_header(struct loop_context* ctx)
 			return FINISHED;
 		}
 		else {
-			syslog(LOG_ERR, "%s: error receiving reply header",
-			       __func__);
+			log(LOG_ERR, "%s: error receiving reply header",
+			    __func__);
 			return FAIL;
 		}
 	}
@@ -294,8 +295,8 @@ loop_recv_data(struct loop_context *ctx)
 			return FINISHED;
 		}
 		else {
-			syslog(LOG_ERR, "%s: error receiving reply data",
-			       __func__);
+			log(LOG_ERR, "%s: error receiving reply data",
+			    __func__);
 			return FAIL;
 		}
 	}
@@ -312,7 +313,7 @@ loop_end_command(struct loop_context *ctx)
 	result = ggioctl(ctx, G_GATE_CMD_DONE);
 
 	if (result == FAILURE) {
-		syslog(LOG_ERR, "%s: could not complete transaction", __func__);
+		log(LOG_ERR, "%s: could not complete transaction", __func__);
 		return FAIL;
 	}
 
@@ -326,8 +327,8 @@ loop_end_command(struct loop_context *ctx)
 
 	case ENXIO:
 	default:
-		syslog(LOG_ERR, "%s: ggate control operation failed: %s",
-		       __func__, strerror(ctx->ggio.gctl_error));
+		log(LOG_ERR, "%s: ggate control operation failed: %s",
+		    __func__, strerror(ctx->ggio.gctl_error));
 		return FAIL;
 	}
 }
@@ -344,8 +345,8 @@ run_loop(ggate_context_t ggate, nbd_client_t nbd)
 	sa.sa_sigaction = signal_handler;
 	sa.sa_flags = SA_SIGINFO;
 	if (sigaction(SIGINT, &sa, NULL) == FAILURE) {
-		syslog(LOG_ERR, "%s: failed to install signal handler: %m",
-		       __func__);
+		log(LOG_ERR, "%s: failed to install signal handler: %m",
+		    __func__);
 		return FAILURE;
 	}
 
@@ -397,55 +398,6 @@ run_loop(ggate_context_t ggate, nbd_client_t nbd)
 	return SUCCESS;
 }
 
-#ifdef HAVE_LIBCASPER
-static int
-casper_dns_lookup(char const *host, char const *port, struct addrinfo **res)
-{
-	cap_channel_t *casper, *casper_dns;
-	int result;
-
-	casper = cap_init();
-	if (casper == NULL) {
-		syslog(LOG_ERR, "%s: failed to initialize Casper: %m",
-		       __func__);
-		return FAILURE;
-	}
-
-	casper_dns = cap_service_open(casper, "system.dns");
-	cap_close(casper);
-	if (casper_dns == NULL) {
-		syslog(LOG_ERR, "%s: failed to open system.dns service: %m",
-		       __func__);
-		return FAILURE;
-	}
-
-	result = cap_getaddrinfo(casper_dns, host, port, NULL, res);
-	cap_close(casper_dns);
-	if (result != SUCCESS) {
-		syslog(LOG_ERR, "%s: failed to lookup address (%s:%s): %s",
-		       __func__, host, port, gai_strerror(result));
-		return FAILURE;
-	}
-
-	return SUCCESS;
-}
-#endif
-
-static int
-enter_capability_mode()
-{
-	cap_rights_t rights;
-
-	fclose(stdin);
-
-	if (cap_enter() == FAILURE) {
-		syslog(LOG_ERR, "%s: cannot enter capability mode", __func__);
-		return FAILURE;
-	}
-
-	return SUCCESS;
-}
-
 int
 main(int argc, char *argv[])
 {
@@ -453,7 +405,8 @@ main(int argc, char *argv[])
 	nbd_client_t nbd;
 	char const *host, *port;
 	char ident[128]; // arbitrary length limit
-	struct addrinfo *ai;
+	cap_channel_t *system$, *system_dns$;
+	struct addrinfo hints, *ai;
 	uint64_t size;
 	bool daemonize;
 	int result, retval;
@@ -495,6 +448,26 @@ main(int argc, char *argv[])
 	snprintf(ident, sizeof ident, "%s (%s:%s)", getprogname(), host, port);
 
 	/*
+	 * Open a channel to use Casper.
+	 */
+
+	system$ = cap_init();
+	if (system$ == NULL) {
+		fprintf(stderr,
+		    "%s: failed to initialize Casper: %s\n",
+		    __func__, strerror(errno));
+		goto close;
+	}
+	system_syslog$ = cap_service_open(system$, "system.syslog");
+	if (system_syslog$ == NULL) {
+		fprintf(stderr,
+		    "%s: failed to open system.dns service: %s\n",
+		    __func__, strerror(errno));
+		cap_close(system$);
+		goto close;
+	}
+
+	/*
 	 * Direct log messages to stderr if stderr is a TTY. Otherwise, log
 	 * to syslog as well as to the console.
 	 *
@@ -503,9 +476,11 @@ main(int argc, char *argv[])
 	 */
 
 	if (isatty(fileno(stderr)))
-		openlog(NULL, LOG_NDELAY | LOG_PERROR, LOG_USER);
+		cap_openlog(system_syslog$, NULL,
+		    LOG_NDELAY | LOG_PERROR, LOG_USER);
 	else
-		openlog(ident, LOG_NDELAY | LOG_CONS | LOG_PID, LOG_DAEMON);
+		cap_openlog(system_syslog$, ident,
+		    LOG_NDELAY | LOG_CONS | LOG_PID, LOG_DAEMON);
 
 	/*
 	 * Ensure the geom_gate module is loaded.
@@ -529,12 +504,12 @@ main(int argc, char *argv[])
 
 	ggate_context_init(ggate);
 	if (ggate_context_open(ggate) == FAILURE) {
-		syslog(LOG_ERR, "%s: cannot open ggate context", __func__);
+		log(LOG_ERR, "%s: cannot open ggate context", __func__);
 		goto close;
 	}
 
 	if (nbd_client_init(nbd) == FAILURE) {
-		syslog(LOG_ERR, "%s: cannot create socket", __func__);
+		log(LOG_ERR, "%s: cannot create socket", __func__);
 		goto close;
 	}
 
@@ -542,24 +517,30 @@ main(int argc, char *argv[])
 	 * Connect to the nbd server.
 	 */
 
-#ifdef HAVE_LIBCASPER
-	if (casper_dns_lookup(host, port, &ai) == FAILURE)
-		goto close;
-#else
-	result = getaddrinfo(host, port, NULL, &ai);
-	if (result != SUCCESS) {
-		syslog(LOG_ERR, "%s: failed to locate server (%s:%s): %s",
-		       __func__, host, port, gai_strerror(result));
+	system_dns$ = cap_service_open(system$, "system.dns");
+	cap_close(system$);
+	if (system_dns$ == NULL) {
+		log(LOG_ERR, "%s: failed to open system.dns service: %m",
+		    __func__);
 		goto close;
 	}
-#endif
+
+	memset(&hints, 0, sizeof hints);
+	hints.ai_flags = AI_CANONNAME;
+	result = cap_getaddrinfo(system_dns$, host, port, &hints, &ai);
+	cap_close(system_dns$);
+	if (result != SUCCESS) {
+		log(LOG_ERR, "%s: failed to lookup address (%s:%s): %s",
+		    __func__, host, port, gai_strerror(result));
+		goto close;
+	}
 
 	result = nbd_client_connect(nbd, ai);
 	freeaddrinfo(ai);
 
 	if (result == FAILURE) {
-		syslog(LOG_ERR, "%s: failed to connect to server (%s:%s)",
-		       __func__, host, port);
+		log(LOG_ERR, "%s: failed to connect to server (%s:%s)",
+		    __func__, host, port);
 		goto close;
 	}
 
@@ -571,7 +552,10 @@ main(int argc, char *argv[])
 	 * established.
 	 */
 
-	if (enter_capability_mode() == FAILURE
+	close(0);
+
+	if (caph_limit_stdio() == FAILURE
+	    || caph_enter_casper() == FAILURE
 	    || ggate_context_rights_limit(ggate) == FAILURE
 	    || nbd_client_rights_limit(nbd) == FAILURE)
 		goto disconnect;
@@ -581,7 +565,7 @@ main(int argc, char *argv[])
 	 */
 
 	if (nbd_client_negotiate(nbd) == FAILURE) {
-		syslog(LOG_ERR, "%s: failed to negotiate options", __func__);
+		log(LOG_ERR, "%s: failed to negotiate options", __func__);
 		goto disconnect;
 	}
 
@@ -594,7 +578,7 @@ main(int argc, char *argv[])
 	if (ggate_context_create_device(ggate, host, port, "",
 					size, DEFAULT_SECTOR_SIZE,
 					DEFAULT_GGATE_FLAGS) == FAILURE) {
-		syslog(LOG_ERR, "%s:failed to create ggate device", __func__);
+		log(LOG_ERR, "%s:failed to create ggate device", __func__);
 		goto destroy;
 	}
 
@@ -605,8 +589,8 @@ main(int argc, char *argv[])
 
 	if (daemonize) {
 		if (daemon(0, 0) == FAILURE) {
-			syslog(LOG_ERR, "%s: failed to daemonize: %m",
-			       __func__);
+			log(LOG_ERR, "%s: failed to daemonize: %m",
+			    __func__);
 			goto close;
 		}
 	}
@@ -618,7 +602,7 @@ main(int argc, char *argv[])
 	retval = run_loop(ggate, nbd);
 
 	if (disconnect)
-		syslog(LOG_WARNING, "%s: interrupted", __func__);
+		log(LOG_WARNING, "%s: interrupted", __func__);
 
 	/*
 	 * Exit cleanly.
@@ -646,7 +630,7 @@ main(int argc, char *argv[])
 	ggate_context_free(ggate);
 
 	if (retval != SUCCESS)
-		syslog(LOG_CRIT, "%s: device connection failed", __func__);
+		log(LOG_CRIT, "%s: device connection failed", __func__);
 
 	return retval;
 }

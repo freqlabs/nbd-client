@@ -75,6 +75,7 @@ Note: This project expects to be compiled with BSD make, not GNU make.
 * configuration file
 * rc scripts
 * option to drop to a less privileged user?
+* Kyua tests?
 
 ## Bugs
 
