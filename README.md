@@ -7,7 +7,8 @@ This client is designed to run on top of FreeBSD's GEOM Gate device driver,
 keeping the network client in a userland daemon rather than in a kernel
 module.
 
-Capsicum is used to limit the capabilities of the client once connected.
+Casper is used to sandbox the DNS lookup of the server host, and Capsicum
+is used to limit the capabilities of the client once connected.
 
 Messages are logged via syslog, and to stdout and stderr when running
 interactively.
@@ -73,8 +74,8 @@ Note: This project expects to be compiled with BSD make, not GNU make.
 * connect to multiple/all exports on a server (spawn a thread per export?)
 * configuration file
 * rc scripts
-* casper support (FreeBSD 11+)
 * option to drop to a less privileged user?
+* Kyua tests?
 
 ## Bugs
 
